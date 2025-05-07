@@ -2,7 +2,7 @@
 import os
 import uuid
 import time
-from flask import Flask, send_file, request, abort
+from flask import Flask, send_file, request, abort, jsonify
 import yt_dlp
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -44,6 +44,21 @@ def cleanup_old_files():
 # Schedule cleanup job every minute
 scheduler.add_job(cleanup_old_files, 'interval', minutes=1)
 
+@app.route('/')
+def home():
+    return jsonify({
+        "status": "running",
+        "endpoints": {
+            "/download": "Download YouTube media",
+            "/health": "Service health check"
+        },
+        "parameters": {
+            "url": "YouTube URL (required)",
+            "type": "[audio|video] (default: audio)",
+            "quality": "Video quality (default: best)"
+        }
+    })
+
 @app.route('/download', methods=['GET'])
 def download_media():
     check_cookies()
@@ -55,11 +70,9 @@ def download_media():
     media_type = request.args.get('type', 'audio').lower()
     quality = request.args.get('quality', 'best')
 
-    # Create temporary directory with UUID
     temp_dir = os.path.join(os.getcwd(), 'temp', str(uuid.uuid4()))
     os.makedirs(temp_dir, exist_ok=True)
 
-    # Configure yt-dlp options
     ydl_opts = {
         'cookiefile': 'cookies.txt',
         'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
@@ -100,7 +113,11 @@ def download_media():
 
 @app.route('/health')
 def health_check():
-    return 'Service is running', 200
+    return jsonify({
+        "status": "healthy",
+        "timestamp": time.time(),
+        "temp_files": len(os.listdir('temp')) if os.path.exists('temp') else 0
+    })
 
 if __name__ == '__main__':
     os.makedirs('temp', exist_ok=True)
