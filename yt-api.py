@@ -1,72 +1,55 @@
 import os
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify
 import yt_dlp
+import uuid
 
 app = Flask(__name__)
 
-@app.route('/download/video', methods=['GET'])
-def download_video():
-    video_url = request.args.get('url')
-    
-    if not video_url:
-        return "Error: No URL provided"
-    
-    # Prepare output path for the downloaded video file
-    output_path = "downloads/video.mp4"  # Or any other format you want
-    
-    # Download video using yt-dlp
+def download_media(url, media_type):
+    unique_id = str(uuid.uuid4())
+    filename = f"{unique_id}.%(ext)s"
+    outtmpl = os.path.join("downloads", filename)
+
     ydl_opts = {
-        'format': 'bestvideo+bestaudio/best',
-        'outtmpl': output_path,  # Specify output path
-        'quiet': False,
+        'outtmpl': outtmpl,
+        'quiet': True,
+        'noplaylist': True,
+        'format': 'bestaudio/best' if media_type == 'audio' else 'bestvideo+bestaudio/best',
+        'postprocessors': []
     }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
-        
-        # Send the video file to the user
-        return send_file(output_path, as_attachment=True, download_name="video.mp4")
-    
-    except Exception as e:
-        return f"Error downloading video: {str(e)}"
-    
-    finally:
-        # Delete the file after sending
-        if os.path.exists(output_path):
-            os.remove(output_path)
+    if media_type == 'audio':
+        ydl_opts['postprocessors'].append({
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        })
 
-@app.route('/download/audio', methods=['GET'])
-def download_audio():
-    video_url = request.args.get('url')
-    
-    if not video_url:
-        return "Error: No URL provided"
-    
-    # Prepare output path for the downloaded audio file
-    output_path = "downloads/audio.mp3"  # Or any other format you want
-    
-    # Download audio using yt-dlp
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': output_path,  # Specify output path
-        'quiet': False,
-    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        ext = 'mp3' if media_type == 'audio' else info['ext']
+        file_path = os.path.join("downloads", f"{unique_id}.{ext}")
+        return file_path
+
+@app.route('/')
+def home():
+    return jsonify({"message": "YouTube Downloader API is live."})
+
+@app.route('/download/<media_type>')
+def download(media_type):
+    url = request.args.get('url')
+    if not url or media_type not in ['video', 'audio']:
+        return jsonify({'error': 'Missing URL or invalid media type (video/audio)'}), 400
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
-        
-        # Send the audio file to the user
-        return send_file(output_path, as_attachment=True, download_name="audio.mp3")
-    
+        file_path = download_media(url, media_type)
+        response = send_file(file_path, as_attachment=True)
+        os.remove(file_path)
+        return response
     except Exception as e:
-        return f"Error downloading audio: {str(e)}"
-    
-    finally:
-        # Delete the file after sending
-        if os.path.exists(output_path):
-            os.remove(output_path)
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    os.makedirs("downloads", exist_ok=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=True, host="0.0.0.0", port=port)
