@@ -1,79 +1,78 @@
-from flask import Flask, request, jsonify
 import os
-import subprocess
-import sys
+from flask import Flask, request, send_file, jsonify
 import yt_dlp
-from pathlib import Path
-import time
+import uuid
 
-# Flask app setup
 app = Flask(__name__)
 
-# Ensure the cookies directory exists
-cookie_dir = Path(__file__).parent / 'cookies'
-cookie_dir.mkdir(parents=True, exist_ok=True)
-cookies_file_path = cookie_dir / 'cookies.txt'
+# Ensure that the downloads folder exists
+os.makedirs("downloads", exist_ok=True)
 
-# Function to ensure dependencies are installed and up-to-date
-def ensure_dependencies():
+# Function to download media (video or audio)
+def download_media(url, media_type):
+    unique_id = str(uuid.uuid4())
+    filename = f"{unique_id}.%(ext)s"
+    outtmpl = os.path.join("downloads", filename)
+
+    # Path to the cookies.txt file (ensure it's in the same directory as this script)
+    cookies_path = os.path.join(os.getcwd(), 'cookies.txt')
+
+    # yt-dlp options for downloading the media
+    ydl_opts = {
+        'outtmpl': outtmpl,
+        'quiet': False,  # Set to False for debugging, it can be True in production
+        'noplaylist': True,
+        'format': 'bestaudio/best' if media_type == 'audio' else 'bestvideo+bestaudio/best',
+        'cookiefile': cookies_path,  # Add cookies.txt for authentication
+    }
+
+    if media_type == 'audio':
+        ydl_opts['postprocessors'] = [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }]
+
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"])
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to upgrade dependencies: {e}")
-
-# Function to download media (video/audio)
-def download_media(url):
-    try:
-        if not os.path.exists(cookies_file_path):
-            return {"error": "Cookies file not found, please provide a valid cookies.txt file."}
-
-        output_dir = Path(__file__).parent / 'downloads'
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        ydl_opts = {
-            'cookies': str(cookies_file_path),
-            'format': 'bestvideo+bestaudio/best',
-            'outtmpl': str(output_dir / '%(title)s.%(ext)s'),
-            'quiet': False,
-            'writethumbnail': True,
-        }
-
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        video_file = None
-        audio_file = None
-
-        for file in output_dir.iterdir():
-            if file.suffix in ['.mp4', '.webm']:
-                video_file = file
-            elif file.suffix in ['.mp3', '.m4a', '.aac']:
-                audio_file = file
-
-        time.sleep(180)  # Wait for 3 minutes before deleting
-
-        # Delete downloaded files after 3 minutes
-        if video_file and video_file.exists():
-            os.remove(video_file)
-        if audio_file and audio_file.exists():
-            os.remove(audio_file)
-
-        return {"status": "success", "video": str(video_file), "audio": str(audio_file)}
-
+            info = ydl.extract_info(url, download=True)
+            ext = 'mp3' if media_type == 'audio' else info['ext']
+            file_path = os.path.join("downloads", f"{unique_id}.{ext}")
+            return file_path
     except Exception as e:
-        return {"error": str(e)}
+        raise Exception(f"Error downloading media: {str(e)}")
 
-# Flask route to handle download requests
-@app.route('/download', methods=['POST'])
-def download():
-    data = request.get_json()
-    url = data.get('url')
-    if not url:
-        return jsonify({"error": "URL is required"}), 400
-    ensure_dependencies()
-    result = download_media(url)
-    return jsonify(result)
+# Route to handle the home page
+@app.route('/')
+def home():
+    return jsonify({"message": "YouTube Downloader API is live."})
 
-if __name__ == "__main__":
-    app.run(debug=True, host='0.0.0.0', port=5000)
+# Route to download the requested media (video or audio)
+@app.route('/download/<media_type>', methods=['GET'])
+def download(media_type):
+    # Get URL from request arguments
+    url = request.args.get('url')
+    
+    # Check if URL and media_type are provided
+    if not url or media_type not in ['video', 'audio']:
+        return jsonify({'error': 'Missing URL or invalid media type (video/audio)'}), 400
+
+    try:
+        # Download the media and get the file path
+        file_path = download_media(url, media_type)
+
+        # Send the file to the user as an attachment
+        response = send_file(file_path, as_attachment=True)
+
+        # After sending the file, remove it from the server
+        os.remove(file_path)
+
+        return response
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# Main entry point to run the Flask app
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    # Run the app on all interfaces to allow remote access
+    app.run(debug=True, host="0.0.0.0", port=port)
