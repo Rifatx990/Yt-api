@@ -10,12 +10,16 @@ def download_media(url, media_type):
     filename = f"{unique_id}.%(ext)s"
     outtmpl = os.path.join("downloads", filename)
 
+    # Path to the cookies.txt file
+    cookies_path = os.path.join(os.getcwd(), 'cookies.txt')
+
     ydl_opts = {
         'outtmpl': outtmpl,
         'quiet': True,
         'noplaylist': True,
         'format': 'bestaudio/best' if media_type == 'audio' else 'bestvideo+bestaudio/best',
-        'postprocessors': []
+        'postprocessors': [],
+        'cookiefile': cookies_path,  # Add cookies.txt file for authentication
     }
 
     if media_type == 'audio':
