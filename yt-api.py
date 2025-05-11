@@ -1,63 +1,52 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, jsonify, send_file
 import subprocess
 import os
-import uuid
+import re
 
 app = Flask(__name__)
 
-DOWNLOAD_FOLDER = "downloads"
-if not os.path.exists(DOWNLOAD_FOLDER):
-    os.makedirs(DOWNLOAD_FOLDER)
-
-@app.route('/')
-def home():
-    return 'YouTube Downloader is running!'
+def clean_url(url):
+    return re.sub(r'[\?&]si=[^&]+', '', url)
 
 @app.route('/download', methods=['GET'])
 def download():
     url = request.args.get('url')
-    download_type = request.args.get('type', 'audio')
-
+    dl_type = request.args.get('type', 'audio')
+    
     if not url:
-        return jsonify({'error': 'URL parameter is required'}), 400
+        return jsonify({"error": "ভিডিও লিংক প্রদান করুন।"}), 400
 
-    file_id = str(uuid.uuid4())
-    output_template = os.path.join(DOWNLOAD_FOLDER, f"{file_id}.%(ext)s")
+    # Clean URL
+    url = clean_url(url)
 
+    output_file = "output.%(ext)s"
     command = [
-        'yt-dlp',
-        '--no-warnings',
-        '--cookies', 'cookies.txt',
-        '-o', output_template
+        "yt-dlp",
+        "--cookies", "cookies.txt",
+        "-f", "bestaudio/best" if dl_type == "audio" else "best",
+        "-o", output_file,
+        url
     ]
 
-    if download_type == 'audio':
-        command += ['-x', '--audio-format', 'mp3']
-    else:
-        command += ['-f', 'mp4']
-
-    command.append(url)
-
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
-
-        if result.returncode != 0:
-            return jsonify({'error': 'ডাউনলোড করতে সমস্যা হয়েছে', 'details': result.stderr.strip()}), 500
-
-        for filename in os.listdir(DOWNLOAD_FOLDER):
-            if file_id in filename:
-                filepath = os.path.join(DOWNLOAD_FOLDER, filename)
-                response = send_file(filepath, as_attachment=True)
-                os.remove(filepath)
+        subprocess.run(command, check=True)
+        
+        # Find downloaded file
+        for ext in ['mp3', 'm4a', 'webm', 'mp4']:
+            filename = f"output.{ext}"
+            if os.path.exists(filename):
+                response = send_file(filename, as_attachment=True)
+                os.remove(filename)
                 return response
 
-        return jsonify({'error': 'ফাইল পাওয়া যায়নি'}), 404
+        return jsonify({"error": "ফাইল ডাউনলোড করা গেল না।"}), 500
 
-    except subprocess.TimeoutExpired:
-        return jsonify({'error': 'ডাউনলোড করতে অনেক সময় লেগে গেছে'}), 504
-
-    except Exception as e:
-        return jsonify({'error': 'সার্ভারে একটি ত্রুটি ঘটেছে', 'details': str(e)}), 500
+    except subprocess.CalledProcessError as e:
+        error_output = e.output.decode("utf-8") if e.output else str(e)
+        return jsonify({
+            "error": "ডাউনলোড করতে সমস্যা হয়েছে",
+            "details": error_output
+        }), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(debug=True)
