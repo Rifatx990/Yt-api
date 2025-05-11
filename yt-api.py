@@ -4,45 +4,51 @@ import os
 import uuid
 
 app = Flask(__name__)
+DOWNLOAD_FOLDER = 'downloads'
+os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
-@app.route("/download", methods=["GET"])
-def download_media():
-    url = request.args.get("url")
-    media_type = request.args.get("type", "audio")
-
-    if not url:
-        return jsonify({"error": "URL প্রদান করুন"}), 400
-
-    filename = f"{uuid.uuid4()}.%(ext)s"
-    output_path = os.path.join("downloads", filename)
-
+def download_with_yt_dlp(url, download_type):
     ydl_opts = {
-        'format': 'bestaudio/best' if media_type == "audio" else 'best',
-        'outtmpl': output_path,
+        'outtmpl': f'{DOWNLOAD_FOLDER}/%(id)s.%(ext)s',
         'quiet': True,
-        'noplaylist': True,
-        'cookiefile': "cookies.txt",  # যদি কুকিজ দরকার হয়
+        'format': 'bestaudio/best' if download_type == 'audio' else 'best',
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }] if media_type == "audio" else [],
+        }] if download_type == 'audio' else [],
+        'cookiefile': 'cookies.txt'
     }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
             info = ydl.extract_info(url, download=True)
-            file_path = ydl.prepare_filename(info)
-            if media_type == "audio":
-                file_path = file_path.rsplit('.', 1)[0] + ".mp3"
-    except yt_dlp.utils.DownloadError as e:
+            filename = ydl.prepare_filename(info)
+            if download_type == 'audio':
+                filename = os.path.splitext(filename)[0] + '.mp3'
+            return filename, info
+        except yt_dlp.utils.DownloadError as e:
+            return None, str(e)
+
+@app.route('/')
+def index():
+    return 'YouTube Downloader API is Running.'
+
+@app.route('/download', methods=['GET'])
+def download_media():
+    url = request.args.get('url')
+    download_type = request.args.get('type', 'audio')
+
+    if not url:
+        return jsonify({'error': 'Please provide a valid URL.'}), 400
+
+    filename, info = download_with_yt_dlp(url, download_type)
+    if filename:
+        return send_file(filename, as_attachment=True)
+    else:
         return jsonify({
-            "error": "ভিডিওটি পাওয়া যায়নি বা অ্যাক্সেস করা যাচ্ছে না।",
-            "details": str(e)
-        }), 404
+            'details': info,
+            'error': 'ভিডিওটি পাওয়া যায়নি বা অ্যাক্সেস করা যাচ্ছে না।'
+        }), 500
 
-    return send_file(file_path, as_attachment=True)
-
-if __name__ == "__main__":
-    os.makedirs("downloads", exist_ok=True)
-    app.run(debug=True)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
