@@ -1,7 +1,6 @@
 import os
 import uuid
 import time
-import traceback
 from flask import Flask, send_file, request, abort, jsonify
 import yt_dlp
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -13,21 +12,23 @@ scheduler = BackgroundScheduler()
 scheduler.start()
 
 def check_cookies():
-    """Warn if cookies.txt is missing"""
+    """Check if cookies.txt exists"""
     if not os.path.exists('cookies.txt'):
-        app.logger.warning("Warning: cookies.txt not found. Age-restricted videos may fail.")
+        app.logger.warning("No cookies.txt found - age-restricted content might not work")
 
 def cleanup_old_files():
     """Clean up files older than 3 minutes"""
     now = time.time()
     temp_root = os.path.join(os.getcwd(), 'temp')
+    
     if not os.path.exists(temp_root):
         return
 
     for dir_name in os.listdir(temp_root):
         dir_path = os.path.join(temp_root, dir_name)
         if os.path.isdir(dir_path):
-            if (now - os.path.getmtime(dir_path)) > 180:
+            dir_time = os.path.getmtime(dir_path)
+            if (now - dir_time) > 180:  # 3 minutes
                 try:
                     for root, dirs, files in os.walk(dir_path, topdown=False):
                         for name in files:
@@ -35,53 +36,42 @@ def cleanup_old_files():
                         for name in dirs:
                             os.rmdir(os.path.join(root, name))
                     os.rmdir(dir_path)
-                    app.logger.info(f"Deleted old temp folder: {dir_path}")
+                    app.logger.info(f"Cleaned up old directory: {dir_path}")
                 except Exception as e:
-                    app.logger.error(f"Cleanup error: {str(e)}")
+                    app.logger.error(f"Error cleaning {dir_path}: {str(e)}")
 
-# Schedule temp file cleanup every minute
+# Schedule cleanup job every minute
 scheduler.add_job(cleanup_old_files, 'interval', minutes=1)
 
 @app.route('/')
 def home():
     return jsonify({
         "status": "running",
-        "usage": "/download?url=<YouTube URL>&type=[audio|video]&quality=[best|360|720...]",
-        "health": "/health"
-    })
-
-@app.route('/health')
-def health_check():
-    return jsonify({
-        "status": "healthy",
-        "timestamp": time.time(),
-        "temp_files": len(os.listdir('temp')) if os.path.exists('temp') else 0
+        "endpoints": {
+            "/download": "Download YouTube media",
+            "/health": "Service health check"
+        },
+        "parameters": {
+            "url": "YouTube URL (required)",
+            "type": "[audio|video] (default: audio)",
+            "quality": "Video quality (default: best)"
+        }
     })
 
 @app.route('/download', methods=['GET'])
 def download_media():
     check_cookies()
-
+    
     url = request.args.get('url')
-    media_type = request.args.get('type', 'audio').lower()
-    quality = request.args.get('quality', 'best')
-
     if not url:
         abort(400, description="Missing required parameter: url")
 
-    # Normalize youtu.be links
-    if "youtu.be/" in url:
-        video_id = url.split("youtu.be/")[-1].split("?")[0]
-        url = f"https://www.youtube.com/watch?v={video_id}"
+    media_type = request.args.get('type', 'audio').lower()
+    quality = request.args.get('quality', 'best')
 
-    # Delay to avoid throttling or race issues
-    time.sleep(1)
-
-    # Create unique temp directory
-    temp_dir = os.path.join('temp', str(uuid.uuid4()))
+    temp_dir = os.path.join(os.getcwd(), 'temp', str(uuid.uuid4()))
     os.makedirs(temp_dir, exist_ok=True)
 
-    # yt-dlp options
     ydl_opts = {
         'cookiefile': 'cookies.txt',
         'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
@@ -106,33 +96,38 @@ def download_media():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             filename = ydl.prepare_filename(info)
-
-            # For audio conversion
+            
             if media_type == 'audio':
                 filename = os.path.splitext(filename)[0] + '.mp3'
-
+            
             ydl.download([url])
-
+            
             if not os.path.exists(filename):
-                abort(500, description="Download failed")
+                abort(500, description="Failed to download file")
 
-            # Send the file and delete after sending
-            response = send_file(filename, as_attachment=True)
+            return send_file(filename, as_attachment=True)
 
-            @response.call_on_close
-            def cleanup():
-                try:
-                    os.remove(filename)
-                    os.rmdir(temp_dir)
-                    app.logger.info(f"Cleaned downloaded: {filename}")
-                except Exception as e:
-                    app.logger.warning(f"Failed cleanup: {str(e)}")
-
-            return response
+    except yt_dlp.utils.DownloadError as e:
+        app.logger.error(f"Download error for {url}: {str(e)}")
+        return jsonify({
+            "error": "ভিডিওটি পাওয়া যায়নি বা অ্যাক্সেস করা যাচ্ছে না।",
+            "details": str(e)
+        }), 404
 
     except Exception as e:
-        traceback.print_exc()
-        abort(500, description=f"Download error: {str(e)}")
+        app.logger.error(f"Unexpected error: {str(e)}")
+        return jsonify({
+            "error": "অন্যান্য ত্রুটি ঘটেছে, অনুগ্রহ করে আবার চেষ্টা করুন।",
+            "details": str(e)
+        }), 500
+
+@app.route('/health')
+def health_check():
+    return jsonify({
+        "status": "healthy",
+        "timestamp": time.time(),
+        "temp_files": len(os.listdir('temp')) if os.path.exists('temp') else 0
+    })
 
 if __name__ == '__main__':
     os.makedirs('temp', exist_ok=True)
