@@ -1,4 +1,3 @@
-# app.py
 import os
 import uuid
 import time
@@ -63,6 +62,7 @@ def home():
 def download_media():
     check_cookies()
     
+    # Get parameters from the request
     url = request.args.get('url')
     if not url:
         abort(400, description="Missing required parameter: url")
@@ -73,6 +73,7 @@ def download_media():
     temp_dir = os.path.join(os.getcwd(), 'temp', str(uuid.uuid4()))
     os.makedirs(temp_dir, exist_ok=True)
 
+    # yt-dlp options for downloading content
     ydl_opts = {
         'cookiefile': 'cookies.txt',
         'outtmpl': os.path.join(temp_dir, '%(title)s.%(ext)s'),
@@ -81,6 +82,7 @@ def download_media():
         'no_warnings': True,
     }
 
+    # Audio-specific options
     if media_type == 'audio':
         ydl_opts.update({
             'format': 'bestaudio/best',
@@ -90,25 +92,40 @@ def download_media():
                 'preferredquality': '192',
             }],
         })
-    else:
+    else:  # Video-specific options
         ydl_opts['format'] = f'bestvideo[height<={quality}]+bestaudio/best' if quality != 'best' else 'best'
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+            
+            # Check if the video is accessible
+            if 'error' in info:
+                app.logger.error(f"Video is not accessible: {info.get('error')}")
+                abort(400, description=f"Video is not accessible: {info.get('error')}")
+            
             filename = ydl.prepare_filename(info)
             
+            # If downloading audio, change the extension to mp3
             if media_type == 'audio':
                 filename = os.path.splitext(filename)[0] + '.mp3'
             
+            # Start the download process
             ydl.download([url])
             
+            # Check if the file exists after download
             if not os.path.exists(filename):
                 abort(500, description="Failed to download file")
 
+            # Return the file as a downloadable response
             return send_file(filename, as_attachment=True)
 
+    except yt_dlp.utils.DownloadError as e:
+        app.logger.error(f"DownloadError for {url}: {str(e)}")
+        abort(500, description=f"Download error: {str(e)}")
+    
     except Exception as e:
+        app.logger.error(f"Error downloading {url}: {str(e)}")
         abort(500, description=f"Error: {str(e)}")
 
 @app.route('/health')
