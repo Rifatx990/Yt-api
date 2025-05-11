@@ -1,63 +1,63 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, send_file, jsonify
 import subprocess
 import os
 import uuid
 
 app = Flask(__name__)
-DOWNLOAD_DIR = "downloads"
-COOKIES_FILE = "cookies.txt"
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
-if not os.path.exists(DOWNLOAD_DIR):
-    os.makedirs(DOWNLOAD_DIR)
+DOWNLOAD_FOLDER = "downloads"
+if not os.path.exists(DOWNLOAD_FOLDER):
+    os.makedirs(DOWNLOAD_FOLDER)
 
-@app.route("/download", methods=["GET"])
-def download_video():
-    url = request.args.get("url")
-    media_type = request.args.get("type", "audio")
+@app.route('/')
+def home():
+    return 'YouTube Downloader is running!'
+
+@app.route('/download', methods=['GET'])
+def download():
+    url = request.args.get('url')
+    download_type = request.args.get('type', 'audio')
 
     if not url:
-        return jsonify({"error": "URL is required"}), 400
+        return jsonify({'error': 'URL parameter is required'}), 400
 
-    filename = str(uuid.uuid4())
-    output_path = os.path.join(DOWNLOAD_DIR, f"{filename}.%(ext)s")
+    file_id = str(uuid.uuid4())
+    output_template = os.path.join(DOWNLOAD_FOLDER, f"{file_id}.%(ext)s")
 
-    if media_type == "audio":
-        ytdlp_command = [
-            "yt-dlp",
-            "--extract-audio",
-            "--audio-format", "mp3",
-            "--cookies", COOKIES_FILE,
-            "--user-agent", USER_AGENT,
-            "-o", output_path,
-            url
-        ]
+    command = [
+        'yt-dlp',
+        '--no-warnings',
+        '--cookies', 'cookies.txt',
+        '-o', output_template
+    ]
+
+    if download_type == 'audio':
+        command += ['-x', '--audio-format', 'mp3']
     else:
-        ytdlp_command = [
-            "yt-dlp",
-            "--cookies", COOKIES_FILE,
-            "--user-agent", USER_AGENT,
-            "-f", "best[filesize<83M]",
-            "-o", output_path,
-            url
-        ]
+        command += ['-f', 'mp4']
+
+    command.append(url)
 
     try:
-        subprocess.run(ytdlp_command, check=True)
-        downloaded_files = os.listdir(DOWNLOAD_DIR)
-        target_file = next((f for f in downloaded_files if f.startswith(filename)), None)
-        if target_file:
-            file_path = os.path.join(DOWNLOAD_DIR, target_file)
-            response = send_file(file_path, as_attachment=True)
-            os.remove(file_path)
-            return response
-        else:
-            return jsonify({"error": "ফাইল ডাউনলোড হয়নি"}), 500
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120)
 
-    except subprocess.CalledProcessError as e:
-        return jsonify({"details": str(e), "error": "ভিডিওটি পাওয়া যায়নি বা অ্যাক্সেস করা যায় না।"}), 500
-    except Exception as ex:
-        return jsonify({"error": f"অপ্রত্যাশিত ত্রুটি: {str(ex)}"}), 500
+        if result.returncode != 0:
+            return jsonify({'error': 'ডাউনলোড করতে সমস্যা হয়েছে', 'details': result.stderr.strip()}), 500
 
-if __name__ == "__main__":
-    app.run(debug=True)
+        for filename in os.listdir(DOWNLOAD_FOLDER):
+            if file_id in filename:
+                filepath = os.path.join(DOWNLOAD_FOLDER, filename)
+                response = send_file(filepath, as_attachment=True)
+                os.remove(filepath)
+                return response
+
+        return jsonify({'error': 'ফাইল পাওয়া যায়নি'}), 404
+
+    except subprocess.TimeoutExpired:
+        return jsonify({'error': 'ডাউনলোড করতে অনেক সময় লেগে গেছে'}), 504
+
+    except Exception as e:
+        return jsonify({'error': 'সার্ভারে একটি ত্রুটি ঘটেছে', 'details': str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
