@@ -1,52 +1,53 @@
-from flask import Flask, request, jsonify, send_file
-import subprocess
+from flask import Flask, request, render_template, send_file, jsonify
 import os
-import re
+import yt_dlp
 
 app = Flask(__name__)
 
-def clean_url(url):
-    return re.sub(r'[\?&]si=[^&]+', '', url)
+@app.route('/')
+def index():
+    return render_template('index.html')
 
 @app.route('/download', methods=['GET'])
 def download():
     url = request.args.get('url')
-    dl_type = request.args.get('type', 'audio')
-    
+    media_type = request.args.get('type', 'audio')
+
     if not url:
-        return jsonify({"error": "ভিডিও লিংক প্রদান করুন।"}), 400
-
-    # Clean URL
-    url = clean_url(url)
-
-    output_file = "output.%(ext)s"
-    command = [
-        "yt-dlp",
-        "--cookies", "cookies.txt",
-        "-f", "bestaudio/best" if dl_type == "audio" else "best",
-        "-o", output_file,
-        url
-    ]
+        return jsonify({"error": "URL is missing."})
 
     try:
-        subprocess.run(command, check=True)
-        
-        # Find downloaded file
-        for ext in ['mp3', 'm4a', 'webm', 'mp4']:
-            filename = f"output.{ext}"
-            if os.path.exists(filename):
-                response = send_file(filename, as_attachment=True)
-                os.remove(filename)
-                return response
+        ydl_opts = {
+            'outtmpl': 'downloaded.%(ext)s',
+        }
 
-        return jsonify({"error": "ফাইল ডাউনলোড করা গেল না।"}), 500
+        if media_type == 'audio':
+            ydl_opts.update({
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            })
+        else:
+            ydl_opts.update({'format': 'best'})
 
-    except subprocess.CalledProcessError as e:
-        error_output = e.output.decode("utf-8") if e.output else str(e)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+
+        # Change extension if audio
+        if media_type == 'audio':
+            filename = os.path.splitext(filename)[0] + ".mp3"
+
+        return send_file(filename, as_attachment=True)
+
+    except yt_dlp.utils.DownloadError as e:
         return jsonify({
-            "error": "ডাউনলোড করতে সমস্যা হয়েছে",
-            "details": error_output
-        }), 500
+            "details": str(e),
+            "error": "ভিডিওটি পাওয়া যায়নি বা ডাউনলোড সম্ভব নয়।"
+        })
 
 if __name__ == '__main__':
     app.run(debug=True)
